@@ -1,0 +1,91 @@
+name: Multi-Stage AKS Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  IMAGE_NAME: sample-app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ secrets.ACR_NAME }}
+
+      - name: Build & Push Docker Image
+        run: |
+          docker build -t ${{ secrets.ACR_NAME }}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG} .
+          docker push ${{ secrets.ACR_NAME }}.azurecr.io/${IMAGE_NAME}:${IMAGE_TAG}
+
+  dev:
+    name: Deploy to DEV
+    needs: build
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS Context
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.AKS_RG }} \
+            --name ${{ secrets.AKS_NAME }} \
+            --overwrite-existing
+
+      - name: Deploy to Dev
+        run: |
+          sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" k8s/dev.yaml
+          kubectl apply -f k8s/dev.yaml
+
+  test:
+    name: Deploy to TEST
+    needs: dev
+    runs-on: ubuntu-latest
+    environment: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Test
+        run: |
+          sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" k8s/test.yaml
+          kubectl apply -f k8s/test.yaml
+
+  prod:
+    name: Deploy to PROD
+    needs: test
+    runs-on: ubuntu-latest
+    environment: prod   # 🔒 manual approval recommended
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to Prod
+        run: |
+          sed -i "s|IMAGE_TAG|${IMAGE_TAG}|g" k8s/prod.yaml
+          kubectl apply -f k8s/prod.yaml
